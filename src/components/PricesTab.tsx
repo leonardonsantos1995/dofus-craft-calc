@@ -20,13 +20,13 @@ export function PricesTab({ summary, server, onChange }: { summary: BuildSummary
           <thead>
             <tr>
               <th>Recurso</th>
-              <th>Preço x1</th>
-              <th>Lote 10</th>
-              <th>Lote 100</th>
-              <th>Qtd total</th>
+              <th className="num input-col">Preço x1</th>
+              <th className="num input-col">Lote 10</th>
+              <th className="num input-col">Lote 100</th>
+              <th className="num">Qtd total</th>
               <th>Como comprar (todos os crafts)</th>
-              <th>Custo</th>
-              <th>Sobra</th>
+              <th className="num">Custo</th>
+              <th className="num">Sobra</th>
               <th>Atualizado</th>
             </tr>
           </thead>

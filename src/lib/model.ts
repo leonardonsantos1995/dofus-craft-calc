@@ -47,6 +47,40 @@ export interface BuildSummary {
   totalMarket: number;
 }
 
+export interface ShoppingList {
+  /** Equipamentos cujo veredito é "Comprar no market". */
+  buyItems: EquipmentSummary[];
+  /** Recursos somados de todos os equipamentos com veredito "Craftar", com o melhor plano de compra. */
+  craftResources: ResourceSummary[];
+  /** Equipamentos que ainda não têm veredito (faltam preços). */
+  undecided: EquipmentSummary[];
+  itemsCost: number;
+  resourcesCost: number;
+  total: number;
+}
+
+/** Monta o que o usuário precisa comprar seguindo o veredito de cada equipamento. */
+export function shoppingList(summary: BuildSummary): ShoppingList {
+  const buyItems = summary.equipments.filter((e) => e.verdict === 'Comprar no market');
+  const toCraft = summary.equipments.filter((e) => e.verdict === 'Craftar');
+  const undecided = summary.equipments.filter((e) => e.verdict !== 'Comprar no market' && e.verdict !== 'Craftar');
+
+  const byKey = new Map(summary.resources.map((r) => [r.key, r]));
+  const qty = new Map<string, number>();
+  for (const eq of toCraft) for (const l of eq.lines) qty.set(l.key, (qty.get(l.key) ?? 0) + l.qty);
+
+  const craftResources: ResourceSummary[] = [...qty.entries()]
+    .map(([key, totalQty]) => {
+      const base = byKey.get(key)!;
+      return { ...base, totalQty, plan: bestPurchase(totalQty, base.prices) };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+
+  const itemsCost = buyItems.reduce((s, e) => s + (e.market ?? 0), 0);
+  const resourcesCost = craftResources.reduce((s, r) => s + (r.plan.cost ?? 0), 0);
+  return { buyItems, craftResources, undecided, itemsCost, resourcesCost, total: itemsCost + resourcesCost };
+}
+
 export function itemKey(info: ItemInfo | null | undefined, ref: ItemRef) {
   if (info) return `id:${info.id}`;
   if (ref.id !== undefined) return `id:${ref.id}`;

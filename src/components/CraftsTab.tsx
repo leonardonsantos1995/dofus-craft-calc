@@ -10,7 +10,7 @@ export function CraftsTab({ summary, onMarketChange }: { summary: BuildSummary; 
   return (
     <section>
       {summary.equipments.map((eq) => (
-        <div className="card equip" key={eq.key}>
+        <div className={`card equip equip-${verdictClass(eq.verdict)}`} key={eq.key}>
           <div className="equip-main">
             <h3>
               <ItemName name={eq.name} sourceName={eq.sourceName} img={eq.img} resolved={eq.resolved} />
@@ -19,10 +19,10 @@ export function CraftsTab({ summary, onMarketChange }: { summary: BuildSummary; 
               <thead>
                 <tr>
                   <th>Recurso</th>
-                  <th>Qtd</th>
+                  <th className="num">Qtd</th>
                   <th>Como comprar</th>
-                  <th>Sobra</th>
-                  <th>Valor</th>
+                  <th className="num">Sobra</th>
+                  <th className="num">Valor</th>
                 </tr>
               </thead>
               <tbody>

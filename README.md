@@ -51,9 +51,9 @@ tests/             testes (npm test)
 
 - Salvar vários sets.
 
-## Deploy (Cloudflare Pages + GitLab)
+## Deploy (Cloudflare Pages + GitHub)
 
-O site é publicado no Cloudflare Pages, conectado ao repositório no GitLab: cada push na branch `main` gera um deploy novo.
+O site é publicado no Cloudflare Pages, conectado ao repositório no GitHub (`leonardonsantos1995/dofus-craft-calc`): cada push na branch `main` gera um deploy novo.
 
 Configuração do projeto no Cloudflare Pages:
 

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { detectCraftLang, parseCraftText } from '../lib/parser';
 import { getCachedById, lookupCraftableByName, lookupIds, searchCraftable, type SearchResult } from '../lib/dofusdb';
 import { buildFromEntries, deleteSet, listSavedSets, saveSet, type SavedSet, type SetEntry } from '../lib/setBuilder';
@@ -14,6 +14,10 @@ const LANGS: { id: Lang; label: string }[] = [
 ];
 
 type Msg = { kind: 'ok' | 'error'; text: string } | null;
+type Source = 'paste' | 'search';
+type Dialog = { kind: 'import' } | { kind: 'clear' } | { kind: 'delete'; name: string } | null;
+
+const SOURCE_KEY = 'dofus-craft-calc:import-source';
 
 interface Props {
   current: Build | null;
@@ -31,11 +35,22 @@ export function ImportTab({ current, onImported, onContinue }: Props) {
   const [active, setActive] = useState(0);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<Msg>(null);
+  const [setMsg, setSetMsg] = useState<Msg>(null);
   const [saved, setSaved] = useState<SavedSet[]>(listSavedSets);
   const [, forceRender] = useState(0);
   const [text, setText] = useState('');
   const [lang, setLang] = useState<Lang>('en');
+  const [source, setSource] = useState<Source>(() => (localStorage.getItem(SOURCE_KEY) as Source) || 'paste');
+  const [dialog, setDialog] = useState<Dialog>(null);
   const firstRun = useRef(true);
+
+  const pieces = entries.reduce((n, e) => n + e.count, 0);
+
+  const chooseSource = (s: Source) => {
+    setSource(s);
+    setMessage(null);
+    localStorage.setItem(SOURCE_KEY, s);
+  };
 
   // Garante nomes/ícones dos itens escolhidos (ex.: ao reabrir o site)
   useEffect(() => {
@@ -93,6 +108,14 @@ export function ImportTab({ current, onImported, onContinue }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entries]);
 
+  // Fecha a modal com Esc
+  useEffect(() => {
+    if (!dialog) return;
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setDialog(null);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [dialog]);
+
   const add = (item: SearchResult) => {
     setEntries((prev) => {
       const found = prev.find((e) => e.id === item.id);
@@ -127,21 +150,41 @@ export function ImportTab({ current, onImported, onContinue }: Props) {
   const doSave = () => {
     const name = setName.trim();
     if (!name) {
-      setMessage({ kind: 'error', text: 'Dê um nome ao set para salvar.' });
+      setSetMsg({ kind: 'error', text: 'Dê um nome ao set para salvar.' });
       return;
     }
     saveSet(name, entries);
     setSaved(listSavedSets());
-    setMessage({ kind: 'ok', text: `Set “${name}” salvo.` });
+    setSetMsg({ kind: 'ok', text: `Set “${name}” salvo.` });
   };
 
   const load = (s: SavedSet) => {
     setSetName(s.name);
     setEntries(s.entries);
-    setMessage({ kind: 'ok', text: `Set “${s.name}” carregado.` });
+    setMessage(null);
+    setSetMsg({ kind: 'ok', text: `Set “${s.name}” carregado.` });
   };
 
-  const importFromText = async () => {
+  const clearSet = () => {
+    setDialog(null);
+    setEntries([]);
+    setSetName('');
+    setSetMsg(null);
+  };
+
+  const confirmDelete = (name: string) => {
+    setDialog(null);
+    deleteSet(name);
+    setSaved(listSavedSets());
+  };
+
+  const requestImport = () => {
+    if (entries.length > 0) setDialog({ kind: 'import' });
+    else importFromText('replace');
+  };
+
+  const importFromText = async (mode: 'replace' | 'append') => {
+    setDialog(null);
     const parsed = parseCraftText(text);
     if (!parsed.length) {
       setMessage({ kind: 'error', text: 'Não encontrei equipamentos no texto. Abra “Craft Details for This build” no DofusBook, aperte Ctrl+A e Ctrl+C e cole aqui.' });
@@ -168,13 +211,30 @@ export function ImportTab({ current, onImported, onContinue }: Props) {
         return;
       }
       const title = text.match(/^\s*CRAFT\s*:\s*(.+?)\s*$/im)?.[1];
-      if (title) setSetName(title);
-      setEntries(found);
+      if (mode === 'replace') {
+        if (title) setSetName(title);
+        setEntries(found);
+      } else {
+        if (title && !setName.trim()) setSetName(title);
+        setEntries((prev) => {
+          const merged = prev.map((e) => ({ ...e }));
+          for (const f of found) {
+            const same = merged.find((m) => m.id === f.id);
+            if (same) same.count += f.count;
+            else merged.push(f);
+          }
+          return merged;
+        });
+      }
       setText('');
+      setSetMsg(null);
       setMessage({
         kind: missing.length ? 'error' : 'ok',
         text:
-          `${found.length} equipamentos adicionados ao set. Remova (✕) os que não for craftar.` +
+          (mode === 'replace'
+            ? `${found.length} equipamentos adicionados ao set.`
+            : `${found.length} equipamentos somados à lista existente.`) +
+          ' Confira a lista ao lado e remova (✕) os que não for craftar.' +
           (missing.length ? ` Não encontrei na DofusDB: ${missing.join(', ')}.` : ''),
       });
     } catch (e) {
@@ -186,140 +246,241 @@ export function ImportTab({ current, onImported, onContinue }: Props) {
 
   return (
     <>
-      <section className="card">
-        <div className="row space-between">
-          <h2>Montar set</h2>
-          <button className="primary" disabled={!current?.equipments.length || !!busy} onClick={onContinue}>
-            Ver preços →
-          </button>
-        </div>
-        <p className="muted">Digite o nome de um equipamento (em português, com ou sem acento) e escolha na lista. Só aparecem itens que têm receita.</p>
+      <div className="builder">
+        {/* 1. Adicionar */}
+        <section className="card builder-add">
+          <h2 className="step-title">
+            <span className="step-num">1</span> Adicione os equipamentos
+          </h2>
 
-        <div className="search">
-          <input
-            className="url-input"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={onKeyDown}
-            onFocus={() => results.length && setOpen(true)}
-            onBlur={() => setTimeout(() => setOpen(false), 150)}
-            placeholder="Ex.: chapéu do papamute, anel ancestral, machado zoth…"
-            autoFocus
-          />
-          {searching && <span className="search-spinner muted small">buscando…</span>}
-          {open && query.trim().length >= 2 && (
-            <ul className="search-results">
-              {results.length === 0 && !searching && <li className="muted">Nenhum item craftável encontrado.</li>}
-              {results.map((r, i) => (
-                <li key={r.id} className={i === active ? 'active' : ''} onMouseDown={() => add(r)} onMouseEnter={() => setActive(i)}>
-                  <ItemName name={r.names.pt ?? `Item ${r.id}`} sourceName={r.names.pt ?? ''} img={r.img} />
-                  <span className="muted small">
-                    {r.typeName ?? ''} · nível {r.level ?? '?'}
-                  </span>
+          <div className="segmented" role="tablist">
+            <button role="tab" aria-selected={source === 'paste'} className={source === 'paste' ? 'active' : ''} onClick={() => chooseSource('paste')}>
+              Colar do DofusBook
+            </button>
+            <button role="tab" aria-selected={source === 'search'} className={source === 'search' ? 'active' : ''} onClick={() => chooseSource('search')}>
+              Buscar item por nome
+            </button>
+          </div>
+
+          {source === 'paste' ? (
+            <div className="add-panel">
+              <ol className="steps">
+                <li>
+                  No DofusBook, abra o set e clique no ícone de martelo (<b>Craft Details for This build</b>).
                 </li>
-              ))}
-            </ul>
+                <li>
+                  Com a janela de craft aberta, aperte <b>Ctrl+A</b> e depois <b>Ctrl+C</b>.
+                </li>
+                <li>
+                  Cole no campo abaixo (<b>Ctrl+V</b>) e clique em <b>Adicionar ao set</b>.
+                </li>
+              </ol>
+              <textarea
+                rows={8}
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                placeholder="Cole aqui o texto copiado do DofusBook…"
+                spellCheck={false}
+              />
+              <div className="row space-between">
+                <label className="muted small">
+                  Idioma do texto{' '}
+                  <select value={lang} onChange={(e) => setLang(e.target.value as Lang)} title="Usado só se o idioma não for detectado sozinho">
+                    {LANGS.map((l) => (
+                      <option key={l.id} value={l.id}>
+                        {l.label}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="hint"> (detectado sozinho)</span>
+                </label>
+                <button className="primary" disabled={!!busy || !text.trim()} onClick={requestImport}>
+                  Adicionar ao set
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="add-panel">
+              <p className="muted">Digite o nome em português (com ou sem acento) e escolha na lista. Só aparecem itens que têm receita.</p>
+              <div className="search">
+                <input
+                  className="url-input"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  onKeyDown={onKeyDown}
+                  onFocus={() => results.length && setOpen(true)}
+                  onBlur={() => setTimeout(() => setOpen(false), 150)}
+                  placeholder="Ex.: chapéu do papamute, anel ancestral, machado zoth…"
+                  autoFocus
+                />
+                {searching && <span className="search-spinner muted small">buscando…</span>}
+                {open && query.trim().length >= 2 && (
+                  <ul className="search-results">
+                    {results.length === 0 && !searching && <li className="muted">Nenhum item craftável encontrado.</li>}
+                    {results.map((r, i) => (
+                      <li key={r.id} className={i === active ? 'active' : ''} onMouseDown={() => add(r)} onMouseEnter={() => setActive(i)}>
+                        <ItemName name={r.names.pt ?? `Item ${r.id}`} sourceName={r.names.pt ?? ''} img={r.img} />
+                        <span className="muted small">
+                          {r.typeName ?? ''} · nível {r.level ?? '?'}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <p className="muted small">Use ↑ ↓ e Enter para escolher pelo teclado. Clicar de novo no mesmo item aumenta a quantidade.</p>
+            </div>
           )}
-        </div>
 
-        {busy && <p className="muted">{busy}</p>}
-        {message && <div className={`message ${message.kind}`}>{message.text}</div>}
+          {busy && <p className="muted busy">{busy}</p>}
+          {message && <div className={`message ${message.kind}`}>{message.text}</div>}
+        </section>
 
-        {entries.length > 0 && (
-          <ul className="set-list">
-            {entries.map((e) => {
-              const info = getCachedById(e.id);
-              const eq = current?.equipments.find((x) => x.id === e.id);
-              return (
-                <li key={e.id}>
-                  <ItemName name={info?.names.pt ?? `Item ${e.id}`} sourceName={info?.names.pt ?? ''} img={info?.img} />
-                  <span className={eq && eq.resources.length === 0 ? 'warn small' : 'muted small'}>
-                    {info?.level ? `nível ${info.level}` : ''}
-                    {eq ? (eq.resources.length ? ` · ${eq.resources.length} recursos` : ' · sem receita') : ''}
+        {/* 2. Revisar */}
+        <section className="card builder-set">
+          <div className="row space-between set-head">
+            <h2 className="step-title">
+              <span className="step-num">2</span> Seu set
+            </h2>
+            {entries.length > 0 && (
+              <span className="muted small">
+                {entries.length} {entries.length === 1 ? 'equipamento' : 'equipamentos'} · {pieces} {pieces === 1 ? 'peça' : 'peças'}
+              </span>
+            )}
+          </div>
+
+          <label className="field">
+            <span className="muted small">Nome do set</span>
+            <input className="name-input" value={setName} onChange={(e) => setSetName(e.target.value)} placeholder="Ex.: Sacrieur 130 água" />
+          </label>
+
+          {entries.length > 0 ? (
+            <ul className="set-list">
+              {entries.map((e) => {
+                const info = getCachedById(e.id);
+                const eq = current?.equipments.find((x) => x.id === e.id);
+                return (
+                  <li key={e.id}>
+                    <ItemName name={info?.names.pt ?? `Item ${e.id}`} sourceName={info?.names.pt ?? ''} img={info?.img} />
+                    <span className={eq && eq.resources.length === 0 ? 'warn small' : 'muted small'}>
+                      {info?.level ? `nível ${info.level}` : ''}
+                      {eq ? (eq.resources.length ? ` · ${eq.resources.length} recursos` : ' · sem receita') : ''}
+                    </span>
+                    <span className="qty" title="Quantidade">
+                      <button onClick={() => changeCount(e.id, -1)} disabled={e.count <= 1} aria-label="Diminuir">
+                        −
+                      </button>
+                      <b>{e.count}</b>
+                      <button onClick={() => changeCount(e.id, +1)} aria-label="Aumentar">
+                        +
+                      </button>
+                    </span>
+                    <button className="remove" onClick={() => remove(e.id)} aria-label="Remover" title="Remover do set">
+                      ✕
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : (
+            <div className="empty-state">
+              <p>Nenhum equipamento ainda.</p>
+              <p className="muted small">Cole o craft do DofusBook ou busque os itens pelo nome no passo 1.</p>
+            </div>
+          )}
+
+          {setMsg && <div className={`message ${setMsg.kind}`}>{setMsg.text}</div>}
+
+          <div className="set-footer">
+            <div className="row">
+              <button disabled={!entries.length} onClick={doSave} title="Guarda o set neste navegador para usar depois">
+                Salvar set
+              </button>
+              <button disabled={!entries.length} onClick={() => setDialog({ kind: 'clear' })}>
+                Limpar
+              </button>
+            </div>
+            <button className="primary big" disabled={!current?.equipments.length || !!busy} onClick={onContinue}>
+              Ver preços →
+            </button>
+          </div>
+        </section>
+      </div>
+
+      {/* Sets salvos */}
+      <section className="card saved">
+        <h3>Sets salvos</h3>
+        {saved.length > 0 ? (
+          <ul>
+            {saved.map((s) => (
+              <li key={s.name}>
+                <div className="saved-info">
+                  <b>{s.name}</b>
+                  <span className="muted small">
+                    {s.entries.length} itens · salvo em {new Date(s.savedAt).toLocaleDateString('pt-BR')}
                   </span>
-                  <span className="qty">
-                    <button onClick={() => changeCount(e.id, -1)} disabled={e.count <= 1} aria-label="Diminuir">−</button>
-                    <b>{e.count}</b>
-                    <button onClick={() => changeCount(e.id, +1)} aria-label="Aumentar">+</button>
-                  </span>
-                  <button className="remove" onClick={() => remove(e.id)} aria-label="Remover">✕</button>
-                </li>
-              );
-            })}
+                </div>
+                <button onClick={() => load(s)}>Abrir</button>
+                <button className="remove" aria-label={`Excluir ${s.name}`} title="Excluir" onClick={() => setDialog({ kind: 'delete', name: s.name })}>
+                  ✕
+                </button>
+              </li>
+            ))}
           </ul>
+        ) : (
+          <p className="muted small">Nenhum set salvo. Use “Salvar set” para guardar um set e abrir depois.</p>
         )}
-        {entries.length === 0 && <p className="muted small">Nenhum equipamento ainda.</p>}
+      </section>
 
-        <div className="row save-row">
-          <input className="name-input" value={setName} onChange={(e) => setSetName(e.target.value)} placeholder="Nome do set (ex.: Sacrieur 130 água)" />
-          <button disabled={!entries.length} onClick={doSave}>
-            Salvar set
-          </button>
-          {entries.length > 0 && (
-            <button
-              onClick={() => {
-                setEntries([]);
-                setSetName('');
-              }}
-            >
+      {dialog?.kind === 'import' && (
+        <Modal title="Já existem itens no set" onClose={() => setDialog(null)}>
+          <p className="muted">
+            O set atual tem {entries.length} {entries.length === 1 ? 'equipamento' : 'equipamentos'}. O que deseja fazer com os itens colados?
+          </p>
+          <div className="modal-actions">
+            <button onClick={() => setDialog(null)}>Cancelar</button>
+            <button onClick={() => importFromText('replace')}>Limpar e substituir</button>
+            <button className="primary" autoFocus onClick={() => importFromText('append')}>
+              Adicionar à lista
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {dialog?.kind === 'clear' && (
+        <Modal title="Limpar o set?" onClose={() => setDialog(null)}>
+          <p className="muted">Todos os {entries.length} equipamentos da lista serão removidos. Sets salvos não são afetados.</p>
+          <div className="modal-actions">
+            <button onClick={() => setDialog(null)}>Cancelar</button>
+            <button className="danger" autoFocus onClick={clearSet}>
               Limpar
             </button>
-          )}
-        </div>
-
-        {saved.length > 0 && (
-          <div className="saved">
-            <h3>Sets salvos</h3>
-            <ul>
-              {saved.map((s) => (
-                <li key={s.name}>
-                  <button className="link-btn" onClick={() => load(s)}>
-                    {s.name}
-                  </button>
-                  <span className="muted small">
-                    {s.entries.length} itens · {new Date(s.savedAt).toLocaleDateString('pt-BR')}
-                  </span>
-                  <button
-                    className="remove"
-                    aria-label={`Excluir ${s.name}`}
-                    onClick={() => {
-                      deleteSet(s.name);
-                      setSaved(listSavedSets());
-                    }}
-                  >
-                    ✕
-                  </button>
-                </li>
-              ))}
-            </ul>
           </div>
-        )}
+        </Modal>
+      )}
 
-        <details className="alt-import">
-          <summary>Importar do DofusBook (copiar e colar)</summary>
-          <ol className="steps">
-            <li>No DofusBook, abra o set e clique no ícone de martelo (<b>Craft Details for This build</b>).</li>
-            <li>Com a janela de craft aberta, aperte <b>Ctrl+A</b> e <b>Ctrl+C</b>.</li>
-            <li>Cole aqui (Ctrl+V) e clique em <b>Adicionar ao set</b>. O idioma é detectado sozinho.</li>
-          </ol>
-          <textarea rows={10} value={text} onChange={(e) => setText(e.target.value)} placeholder={'Ancestral Ring\n\t5 Dark Treechnid Amber\n…'} spellCheck={false} />
-          <div className="row">
-            <label>
-              Idioma (se não detectar){' '}
-              <select value={lang} onChange={(e) => setLang(e.target.value as Lang)}>
-                {LANGS.map((l) => (
-                  <option key={l.id} value={l.id}>
-                    {l.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button disabled={!!busy || !text.trim()} onClick={importFromText}>
-              Adicionar ao set
+      {dialog?.kind === 'delete' && (
+        <Modal title="Excluir set salvo?" onClose={() => setDialog(null)}>
+          <p className="muted">O set “{dialog.name}” será excluído permanentemente.</p>
+          <div className="modal-actions">
+            <button onClick={() => setDialog(null)}>Cancelar</button>
+            <button className="danger" autoFocus onClick={() => confirmDelete(dialog.name)}>
+              Excluir
             </button>
           </div>
-        </details>
-      </section>
+        </Modal>
+      )}
     </>
+  );
+}
+
+function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+  return (
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <div className="modal" role="dialog" aria-modal="true" aria-label={title} onMouseDown={(e) => e.stopPropagation()}>
+        <h3>{title}</h3>
+        {children}
+      </div>
+    </div>
   );
 }
